@@ -14,8 +14,8 @@ const { Client, GatewayIntentBits } = require('discord.js');
 
 const TOKEN = '$TOKEN';
 
-const CLIENT_ID = '1315669854338154590';
-const TEST_GUILD_ID = '1479445863032946800';
+const CLIENT_ID = '1479467278172160070';
+const TEST_GUILD_ID = '1315669854338154590';
 
 const client = new Client({
   intents: [
