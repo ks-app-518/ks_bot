@@ -6,7 +6,7 @@ const { Client, GatewayIntentBits } = require('discord.js');
 //    ↓↓↓  PASTE YOUR REAL TOKEN HERE  ↓↓↓
 //    NEVER share this file after you add the real token
 // ────────────────────────────────────────────────
-const TOKEN = 'MTQ3OTQ0NTg2MzAzMjk0NjgwMA.GPO9W_.Vv9ZfSoJg3p1Z6fyhCz64508HSjYhQtlyVhxr0';
+const TOKEN = 'MTQ3OTQ0NTg2MzAzMjk0NjgwMA.GA05-c.50iqdXBqoTFKAs2SOWYKbqbkkXYagzDuemwAWI';
 
 // Optional: you can also hardcode client ID & guild ID if needed later
 const CLIENT_ID = '1315669854338154590';     // your Application ID (not secret)
