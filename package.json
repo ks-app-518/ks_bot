@@ -1,0 +1,9 @@
+{
+  "name": "my-discord-bot",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node index.js",
+    "deploy-commands": "node deploy-commands.js",
+    "test": "node --check index.js && echo '✅ Syntax check passed!'"
+  },
+}
