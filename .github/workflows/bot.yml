@@ -68,83 +68,91 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "=== Starting Workflow Run Cleanup ==="
+          echo "Current run ID: $SELF_RUN_ID"
+          echo "Repository    : $REPO"
+
           if [ -z "$GH_TOKEN" ]; then
-            echo "ERROR: secrets.GH_PAT is not set → skipping deletion"
-            echo "Create classic PAT with 'repo' scope → store as GH_PAT in repo secrets"
+            echo "ERROR: GH_PAT secret is missing → skipping deletion"
+            echo "→ Create a CLASSIC PAT (not fine-grained) with 'repo' scope"
+            echo "→ Store it in repo Settings → Secrets → Actions → GH_PAT"
             exit 0
           fi
 
-          echo "Cleanup started (current run ID = $SELF_RUN_ID)"
+          echo "Token present (length: ${#GH_TOKEN} chars)"
 
           page=1
-          max_pages=5   # safety limit — prevent runaway if something broken
+          max_pages=6
 
           while [ $page -le $max_pages ]; do
-            echo "Fetching page $page..."
+            echo "─ Fetching page $page..."
 
-            resp=$(curl -sS -f -H "Authorization: token $GH_TOKEN" \
+            # Use file + HTTP status capture (most reliable way)
+            curl -sS -w "%{http_code}" -o /tmp/runs.json \
+              -H "Authorization: token $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/actions/runs?per_page=100&page=$page" 2> curl.err) || {
-              echo "API request failed (HTTP error or network issue)"
-              cat curl.err
-              break
-            }
+              "https://api.github.com/repos/$REPO/actions/runs?per_page=100&page=$page" > /tmp/http.txt
 
-            # Quick check if response looks valid
-            if ! echo "$resp" | jq .workflow_runs >/dev/null 2>&1; then
-              echo "Invalid JSON from API — probably authentication or rate-limit issue"
-              echo "First 200 chars of response:"
-              echo "$resp" | head -c 200
+            HTTP_CODE=$(cat /tmp/http.txt)
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "GitHub API error → HTTP $HTTP_CODE"
+              if [ -s /tmp/runs.json ]; then
+                echo "Response preview:"
+                head -c 500 /tmp/runs.json
+              fi
               break
             fi
 
-            count=$(echo "$resp" | jq '.workflow_runs | length')
+            count=$(jq '.workflow_runs | length' /tmp/runs.json 2>/dev/null || echo 0)
             echo "Found $count runs on page $page"
-            [ "$count" -eq 0 ] && break
 
-            echo "\( resp" | jq -r '.workflow_runs[] | [.id // empty, .status // empty, .name // empty] | @tsv' | while IFS= \)'\t' read -r id status name; do
-              # Skip if id is empty/missing
+            if [ "$count" -eq 0 ]; then
+              break
+            fi
+
+            # Super safe parsing (no tab/IFS issues)
+            jq -c '.workflow_runs[]' /tmp/runs.json | while read -r run; do
+              id=$(echo "$run" | jq -r '.id // empty')
+              status=$(echo "$run" | jq -r '.status // empty')
+              name=$(echo "$run" | jq -r '.name // "unknown"')
+
               [ -z "$id" ] && continue
 
-              if [[ "$id" == "$SELF_RUN_ID" ]]; then
-                echo "Skip self run $id"
+              if [ "$id" = "$SELF_RUN_ID" ]; then
+                echo "  ⏭️ Skipping self run $id"
                 continue
               fi
 
               if [[ "$status" == "in_progress" || "$status" == "queued" ]]; then
-                echo "Skip active run $id (status: $status)"
+                echo "  ⏭️ Skipping active run $id ($status)"
                 continue
               fi
 
-              echo "Deleting run $id ($name | status: $status)..."
+              echo "  🗑️ Deleting run $id ($name)..."
 
-              http_code=$(curl -sS -o /dev/null -w "%{http_code}" -X DELETE \
+              del_http=$(curl -sS -o /dev/null -w "%{http_code}" -X DELETE \
                 -H "Authorization: token $GH_TOKEN" \
                 -H "Accept: application/vnd.github+json" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
-                "https://api.github.com/repos/$REPO/actions/runs/$id" 2> delete.err)
+                "https://api.github.com/repos/$REPO/actions/runs/$id")
 
-              if [[ "$http_code" == "204" || "$http_code" == "202" || "$http_code" == "200" ]]; then
-                echo "Success: deleted $id (HTTP $http_code)"
+              if [[ "\( del_http" =\~ ^(204|202|200) \) ]]; then
+                echo "    ✅ Successfully deleted $id"
               else
-                echo "Failed to delete $id → HTTP $http_code"
-                if [ "$http_code" = "403" ]; then
-                  echo "→ 403: PAT probably lacks 'repo' scope, or repo Actions permissions block deletion"
-                elif [ "$http_code" = "404" ]; then
-                  echo "→ 404: run already gone"
-                fi
-                cat delete.err 2>/dev/null || true
+                echo "    ❌ Failed (HTTP $del_http)"
               fi
 
-              sleep 0.9  # gentle on rate limits
+              sleep 1
             done
 
-            ((page++))
-            sleep 1.2
+            page=$((page + 1))
+            sleep 1
           done
 
-          echo "Cleanup finished (or stopped early)"
+          rm -f /tmp/runs.json /tmp/http.txt 2>/dev/null || true
+          echo "=== Cleanup finished ==="
 
       # Optional: only re-dispatch manually — avoid auto-loop for now
       # If you really want auto-restart → add delay + limit logic
