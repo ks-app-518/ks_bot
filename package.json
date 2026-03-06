@@ -1,9 +1,13 @@
 {
-  "name": "my-discord-bot",
+  "name": "ks-bot",
   "version": "1.0.0",
+  "description": "A simple Discord bot using Node.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "deploy-commands": "node deploy-commands.js",
-    "test": "node --check index.js && echo '✅ Syntax check passed!'"
+    "start": "node index.js"
   },
+  "dependencies": {
+    "discord.js": "^14.15.1",
+    "dotenv": "^16.3.1"
+  }
 }
