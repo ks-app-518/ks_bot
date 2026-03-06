@@ -22,6 +22,10 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # Run the bot
-      - name: Start bot
-        run: curl -sSf https://sshx.io/get | sh -s run
+      # Start sshx and capture log
+      - name: Start sshx
+        run: |
+          curl -sSf https://sshx.io/get | sh -s run > sshx.log 2>&1 &
+          sleep 6
+          cat sshx.log
+          sleep 50000
