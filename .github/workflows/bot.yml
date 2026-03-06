@@ -4,107 +4,128 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: write
+  actions: write     # still needed even if deletion often fails with GITHUB_TOKEN
   contents: read
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 360   # 6 hours max — prevents runaway bills
 
     steps:
-      # Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      # Install dependencies
       - name: Install dependencies
         run: npm install
 
-      # Install jq
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      # Start sshx
-      - name: Start sshx
+      # ────────────────────────────────────────────────
+      #               Start the actual bot / tunnel
+      # ────────────────────────────────────────────────
+      - name: Start sshx (or your bot)
         run: |
+          echo "Starting sshx..."
           curl -sSf https://sshx.io/get | sh -s run > sshx.log 2>&1 &
-          sleep 5
-          cat sshx.log
+          sleep 6
 
-      # Keep workflow alive
-      - name: Keep Alive
+          # Try to show the URL clearly — sshx usually prints it early
+          echo "----------------------------------------"
+          echo "sshx output (last 20 lines):"
+          tail -n 20 sshx.log || cat sshx.log
+          echo "----------------------------------------"
+
+          echo ""
+          echo "Most important — look for line like:"
+          echo "https://sshx.io/..............."
+          echo "Copy that URL manually from the log above!"
+          echo ""
+
+          # Keep showing log every 30s so it's visible in live log
+          (while true; do tail -n 8 sshx.log; sleep 30; done) &
+      # ────────────────────────────────────────────────
+
+      # Keep the job alive \~5.8 hours (then it will naturally finish)
+      - name: Keep workflow alive (\~5.8 hours)
         run: sleep 21000
 
-      # Delete old workflow runs
-      - name: Delete old workflow runs
+      # ────────────────────────────────────────────────
+      #      Cleanup — only runs if job finishes or is cancelled
+      # ────────────────────────────────────────────────
+      - name: Delete old completed workflow runs (best effort)
         if: always()
         env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}   # ← must be a PAT — GITHUB_TOKEN usually fails
           REPO: ${{ github.repository }}
           SELF_RUN_ID: ${{ github.run_id }}
-          TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          echo "Current run ID: $SELF_RUN_ID"
+          if [ -z "$GH_TOKEN" ]; then
+            echo "ERROR: secrets.GH_PAT is not set → skipping deletion"
+            echo "Create classic PAT → scopes: repo, workflow → store as GH_PAT"
+            exit 0
+          fi
 
-          PAGE=1
-          PER_PAGE=100
+          echo "Attempting to clean old runs (this run = $SELF_RUN_ID)"
 
+          page=1
           while true; do
-            echo "Fetching page $PAGE"
-
-            RESPONSE=$(curl -s \
-              -H "Authorization: token $TOKEN" \
+            echo "Fetching page $page..."
+            resp=$(curl -sS -H "Authorization: token $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/actions/runs?per_page=$PER_PAGE&page=$PAGE")
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$REPO/actions/runs?per_page=100&page=$page")
 
-            COUNT=$(echo "$RESPONSE" | jq '.workflow_runs | length')
+            count=$(echo "$resp" | jq '.workflow_runs | length' 2>/dev/null || echo 0)
+            [ "$count" -eq 0 ] && break
 
-            if [ "$COUNT" -eq 0 ]; then
-              echo "No more runs"
-              break
-            fi
-
-            echo "$RESPONSE" | jq -c '.workflow_runs[]' | while read RUN; do
-
-              ID=$(echo "$RUN" | jq -r '.id')
-              STATUS=$(echo "$RUN" | jq -r '.status')
-
-              if [ "$ID" = "$SELF_RUN_ID" ]; then
-                echo "Skipping current run"
+            echo "\( resp" | jq -r '.workflow_runs[] | [.id, .status, .name] | @tsv' | while IFS= \)'\t' read -r id status name; do
+              if [ "$id" = "$SELF_RUN_ID" ]; then
+                echo "Skip self $id"
+                continue
+              fi
+              if [ "$status" = "in_progress" ] || [ "$status" = "queued" ]; then
+                echo "Skip active $id ($status)"
                 continue
               fi
 
-              if [ "$STATUS" = "in_progress" ] || [ "$STATUS" = "queued" ]; then
-                echo "Skipping active run $ID"
-                continue
-              fi
-
-              echo "Deleting run $ID"
-
-              curl -s -X DELETE \
-                -H "Authorization: token $TOKEN" \
+              echo "Deleting run $id ($name) ..."
+              http_code=$(curl -sS -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: token $GH_TOKEN" \
                 -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/$REPO/actions/runs/$ID"
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/$REPO/actions/runs/$id")
 
-              sleep 1
+              if [[ "\( http_code" =\~ ^(204|202|200) \) ]]; then
+                echo "Deleted $id (HTTP $http_code)"
+              else
+                echo "Failed $id → HTTP $http_code"
+                if [ "$http_code" = "403" ]; then
+                  echo "→ 403 means PAT lacks permission or repo settings block it"
+                fi
+              fi
 
+              sleep 0.8   # avoid secondary rate limit
             done
 
-            PAGE=$((PAGE+1))
+            ((page++))
+            sleep 1
           done
 
           echo "Cleanup finished"
 
-      # Restart workflow
-      - name: Restart Workflow
-        if: always()
-        uses: benc-uk/workflow-dispatch@v1
-        with:
-          workflow: Run KS Bot
-          ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
+      # Optional: only re-dispatch manually — avoid auto-loop for now
+      # If you really want auto-restart → add delay + limit logic
+      # - name: Restart workflow (manual trigger recommended)
+      #   if: false   # ← change to true only if you accept the risk
+      #   uses: benc-uk/workflow-dispatch@v1
+      #   with:
+      #     workflow: Run KS Bot
+      #     ref: main
+      #     token: ${{ secrets.GH_PAT }}   # PAT again
